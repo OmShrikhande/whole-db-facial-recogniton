@@ -1,44 +1,33 @@
 from flask import Flask, request, redirect, url_for, render_template, flash, jsonify, Response
+from config import Config
+from models import db
+from db_service import DatabaseService
 import os
 import time
-import pickle
 import face_recognition
 import cv2
 import numpy as np
-import threading
 from threading import Thread, Lock
+from io import BytesIO
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET", "change-me")
+app.config.from_object(Config)
 
-# Base directory setup
+db.init_app(app)
+
+with app.app_context():
+    db.create_all()
+
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 KNOWN_FACES_DIR = os.path.join(BASE_DIR, "known_faces")
 UNKNOWN_FACES_DIR = os.path.join(BASE_DIR, "unknown_faces")
-ENCODINGS_PATH = os.path.join(BASE_DIR, "encodings.pkl")
 os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
 os.makedirs(UNKNOWN_FACES_DIR, exist_ok=True)
 
-# Global camera variables
 camera_running = False
 camera_lock = Lock()
 current_frame = None
 verification_result = {"status": None, "message": "", "name": "", "color": (255, 255, 255)}
-
-
-# ----------------------------
-# Helper Functions
-# ----------------------------
-def load_encodings():
-    if not os.path.exists(ENCODINGS_PATH):
-        return [], []
-    with open(ENCODINGS_PATH, "rb") as f:
-        return pickle.load(f)
-
-
-def save_encodings(encodings, names):
-    with open(ENCODINGS_PATH, "wb") as f:
-        pickle.dump((encodings, names), f)
 
 
 def generate_frames():
@@ -50,8 +39,7 @@ def generate_frames():
         print("[ERROR] Cannot open camera")
         return
     
-    # Load known encodings
-    known_encodings, known_names = load_encodings()
+    known_encodings, known_names = DatabaseService.get_encodings_for_verification()
     print(f"[INFO] Loaded {len(known_names)} known faces: {known_names}")
     
     start_time = None
@@ -62,11 +50,9 @@ def generate_frames():
         if not ret:
             break
         
-        # Resize frame for faster processing
         small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         
-        # Detect faces
         faces = face_recognition.face_locations(rgb_small_frame)
         
         if faces and not captured:
@@ -83,7 +69,6 @@ def generate_frames():
             else:
                 captured = True
                 
-                # Get encoding for detected face
                 encoding = face_recognition.face_encodings(rgb_small_frame, faces)[0]
                 matches = face_recognition.compare_faces(known_encodings, encoding)
                 match_count = sum(matches) if matches else 0
@@ -95,11 +80,13 @@ def generate_frames():
                     msg = f"✅ VERIFIED: {name}"
                     color = (0, 255, 0)
                     status = "verified"
+                    DatabaseService.log_verification(None, status, msg)
                     print(f"[INFO] Verified: {name}")
                 elif match_count > 1:
                     msg = f"❌ REJECTED: {match_count} matching faces"
                     color = (0, 0, 255)
                     status = "rejected"
+                    DatabaseService.log_verification(None, status, msg)
                     timestamp = int(time.time())
                     cv2.imwrite(f"{UNKNOWN_FACES_DIR}/unknown_{timestamp}.jpg", frame)
                     print(f"[INFO] Ambiguous match saved")
@@ -107,6 +94,7 @@ def generate_frames():
                     msg = "❌ UNKNOWN FACE"
                     color = (0, 0, 255)
                     status = "unknown"
+                    DatabaseService.log_verification(None, status, msg)
                     timestamp = int(time.time())
                     cv2.imwrite(f"{UNKNOWN_FACES_DIR}/unknown_{timestamp}.jpg", frame)
                     print(f"[INFO] Saved unknown face")
@@ -121,7 +109,6 @@ def generate_frames():
             if verification_result["status"] not in ["verified", "rejected", "unknown"]:
                 verification_result = {"status": None, "message": "No face detected", "name": "", "color": (255, 255, 255)}
         
-        # Draw rectangle around face for display
         if faces:
             for (top, right, bottom, left) in faces:
                 top *= 4
@@ -132,7 +119,6 @@ def generate_frames():
         
         current_frame = frame
         
-        # Encode frame to JPEG
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         
@@ -148,13 +134,16 @@ def generate_frames():
 
 @app.route("/", methods=["GET"])
 def index():
-    _, names = load_encodings()
+    users = DatabaseService.get_all_users()
+    names = [user['name'] for user in users]
     return render_template("landing.html", names=names)
 
 
 @app.route("/register", methods=["GET"])
 def register():
-    return render_template("register.html")
+    users = DatabaseService.get_all_users()
+    names = [user['name'] for user in users]
+    return render_template("register.html", names=names)
 
 
 @app.route("/upload", methods=["POST"])
@@ -174,32 +163,21 @@ def upload():
         flash('No file selected.')
         return redirect(url_for('register'))
 
-    # Save uploaded image
     timestamp = int(time.time())
     ext = os.path.splitext(file.filename)[1] or '.jpg'
     safe_filename = f"{name}_{timestamp}{ext}"
     save_path = os.path.join(KNOWN_FACES_DIR, safe_filename)
     file.save(save_path)
 
-    # Face encoding
-    image = face_recognition.load_image_file(save_path)
-    encs = face_recognition.face_encodings(image)
-    if len(encs) == 0:
-        os.remove(save_path)
-        flash('No face found in the uploaded image. Upload a clear frontal face photo.')
-        return redirect(url_for('register'))
-    if len(encs) > 1:
-        os.remove(save_path)
-        flash('Multiple faces found. Please upload one face per image.')
-        return redirect(url_for('register'))
-
-    encoding = encs[0]
-    encodings, names = load_encodings()
-    encodings.append(encoding)
-    names.append(name)
-    save_encodings(encodings, names)
-
-    flash(f'Success: "{name}" registered successfully!')
+    success, message = DatabaseService.register_user(name, save_path, save_path)
+    
+    if success:
+        flash(f'Success: {message}')
+    else:
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        flash(f'Error: {message}')
+    
     return redirect(url_for('register'))
 
 
@@ -210,33 +188,10 @@ def check_duplicate():
 
     file = request.files['image']
     try:
-        image = face_recognition.load_image_file(file)
-    except Exception:
-        return jsonify({'error': 'invalid_image'}), 400
-
-    encs = face_recognition.face_encodings(image)
-    if len(encs) == 0:
-        return jsonify({'status': 'no_face'})
-    if len(encs) > 1:
-        return jsonify({'status': 'multiple_faces'})
-
-    encoding = encs[0]
-    encodings, names = load_encodings()
-
-    if not encodings:
-        return jsonify({'duplicate': False})
-
-    distances = face_recognition.face_distance(encodings, encoding)
-    best_idx = int(distances.argmin())
-    best_distance = float(distances[best_idx])
-
-    threshold = 0.45
-    matched_indices = [i for i, d in enumerate(distances) if d <= threshold]
-
-    if matched_indices:
-        matches = [names[i] for i in matched_indices]
-        return jsonify({'duplicate': True, 'matches': matches, 'best_distance': best_distance})
-    return jsonify({'duplicate': False, 'best_distance': best_distance})
+        result = DatabaseService.check_duplicate(file)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/video_feed')
@@ -271,6 +226,130 @@ def stop_verification():
     global camera_running
     camera_running = False
     return jsonify({'status': 'stopped'})
+
+
+@app.route('/api/v1/users', methods=['GET'])
+def api_get_users():
+    """API: Get all registered users"""
+    try:
+        users = DatabaseService.get_all_users()
+        return jsonify({'status': 'success', 'data': users}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/v1/users/<name>', methods=['GET'])
+def api_get_user(name):
+    """API: Get user by name"""
+    try:
+        user = DatabaseService.get_user_by_name(name)
+        if user:
+            return jsonify({'status': 'success', 'data': user}), 200
+        return jsonify({'status': 'error', 'message': 'User not found'}), 404
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/v1/register', methods=['POST'])
+def api_register():
+    """API: Register new user with face encoding"""
+    try:
+        if 'file' not in request.files or 'name' not in request.form:
+            return jsonify({'status': 'error', 'message': 'Missing file or name'}), 400
+        
+        file = request.files['file']
+        name = request.form.get('name', '').strip()
+        
+        if not name:
+            return jsonify({'status': 'error', 'message': 'Name is required'}), 400
+        
+        timestamp = int(time.time())
+        ext = os.path.splitext(file.filename)[1] or '.jpg'
+        safe_filename = f"{name}_{timestamp}{ext}"
+        save_path = os.path.join(KNOWN_FACES_DIR, safe_filename)
+        file.save(save_path)
+        
+        success, message = DatabaseService.register_user(name, save_path, save_path)
+        
+        if success:
+            user = DatabaseService.get_user_by_name(name)
+            return jsonify({'status': 'success', 'message': message, 'user': user}), 201
+        else:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+            return jsonify({'status': 'error', 'message': message}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/v1/verify', methods=['POST'])
+def api_verify():
+    """API: Verify face from image"""
+    try:
+        if 'image' not in request.files:
+            return jsonify({'status': 'error', 'message': 'No image provided'}), 400
+        
+        file = request.files['image']
+        result = DatabaseService.verify_face(file)
+        
+        if result.get('status') == 'verified':
+            return jsonify({'status': 'success', 'data': result}), 200
+        elif result.get('status') == 'unknown':
+            return jsonify({'status': 'unknown', 'message': result.get('message')}), 404
+        else:
+            return jsonify({'status': 'error', 'message': result.get('message')}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/v1/check-duplicate', methods=['POST'])
+def api_check_duplicate():
+    """API: Check if face is duplicate"""
+    try:
+        if 'image' not in request.files:
+            return jsonify({'status': 'error', 'message': 'No image provided'}), 400
+        
+        file = request.files['image']
+        result = DatabaseService.check_duplicate(file)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/v1/verification-logs', methods=['GET'])
+def api_get_logs():
+    """API: Get verification logs"""
+    try:
+        limit = request.args.get('limit', 100, type=int)
+        logs = DatabaseService.get_verification_logs(limit)
+        return jsonify({'status': 'success', 'data': logs}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/v1/encodings', methods=['GET'])
+def api_get_encodings():
+    """API: Get all encodings (for client-side processing)"""
+    try:
+        encodings, names = DatabaseService.get_encodings_for_verification()
+        encoded_list = [enc.tolist() for enc in encodings]
+        return jsonify({'status': 'success', 'encodings': encoded_list, 'names': names}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/v1/health', methods=['GET'])
+def api_health():
+    """API: Health check endpoint"""
+    try:
+        users = DatabaseService.get_all_users()
+        return jsonify({
+            'status': 'healthy',
+            'database': 'connected',
+            'total_users': len(users)
+        }), 200
+    except Exception as e:
+        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
 
 
 # ----------------------------

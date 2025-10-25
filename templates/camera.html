@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>Face Verification - Camera</title>
+  <script src="{{ url_for('static', filename='config.js') }}"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     
@@ -169,7 +170,7 @@
     <h1>👤 Face Verification</h1>
     
     <div class="camera-wrapper">
-      <img id="videoStream" src="{{ url_for('video_feed') }}" alt="Video Stream">
+      <img id="videoStream" src="" alt="Video Stream">
     </div>
     
     <div class="result-box" id="resultBox">
@@ -181,7 +182,7 @@
     
     <div class="controls">
       <button class="btn btn-stop" onclick="stopVerification()">Stop Verification</button>
-      <a href="{{ url_for('index') }}" class="btn btn-home">Back to Home</a>
+      <a href="#" class="btn btn-home" onclick="window.location.href = API_ENDPOINTS.INDEX; return false;">Back to Home</a>
     </div>
     
     <div class="info-box">
@@ -190,12 +191,15 @@
   </div>
 
   <script>
+    // Initialize video stream
+    document.getElementById('videoStream').src = API_ENDPOINTS.VIDEO_FEED;
+    
     const resultBox = document.getElementById('resultBox');
     let lastStatus = null;
 
     async function updateVerificationStatus() {
       try {
-        const response = await fetch("{{ url_for('verification_status') }}");
+        const response = await fetch(API_ENDPOINTS.VERIFICATION_STATUS);
         const data = await response.json();
 
         // Only update if status changed
@@ -241,8 +245,8 @@
 
     async function stopVerification() {
       try {
-        await fetch("{{ url_for('stop_verification') }}", { method: 'POST' });
-        window.location.href = "{{ url_for('index') }}";
+        await fetch(API_ENDPOINTS.STOP_VERIFICATION, { method: 'POST' });
+        window.location.href = API_ENDPOINTS.INDEX;
       } catch (error) {
         console.error('Error stopping verification:', error);
       }

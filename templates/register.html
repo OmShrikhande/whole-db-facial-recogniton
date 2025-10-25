@@ -1,44 +1,269 @@
-<!doctype html>
-<title>Person Verification - Upload</title>
-<style>
-  body { font-family: Arial, Helvetica, sans-serif; margin: 2rem }
-  .box { max-width:600px; margin:auto }
-  .list { margin-top: 1rem; }
-  .msg { color: #b00 }
-</style>
-<div class="box">
-  <h1>Upload Known Person Image</h1>
-  {% with messages = get_flashed_messages() %}
-    {% if messages %}
-      <ul class=msg>
-      {% for m in messages %}
-        <li>{{ m }}</li>
-      {% endfor %}
-      </ul>
-    {% endif %}
-  {% endwith %}
-
-  <form id="uploadForm" method=post enctype=multipart/form-data action="{{ url_for('upload') }}">
-    <label>Person name (short):</label><br>
-    <input type="text" name="name" id="nameInput" required><br><br>
-    <label>Image file (jpg/png):</label><br>
-    <input type="file" name="file" id="imageInput" accept="image/*" required><br>
-    <div id="checkMsg" class="msg"></div>
-    <br>
-    <button id="uploadBtn" type="submit" disabled>Upload & Encode</button>
-  </form>
-
-  <div class="list">
-    <h3>Known people</h3>
-    {% if names %}
-      <ul>
-      {% for n in names %}
-        <li>{{ n }}</li>
-      {% endfor %}
-      </ul>
-    {% else %}
-      <p><em>No known people yet.</em></p>
-    {% endif %}
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Register - Face Recognition</title>
+  <script src="{{ url_for('static', filename='config.js') }}"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 2rem 1rem;
+      color: #fff;
+    }
+    
+    .container {
+      max-width: 700px;
+      margin: 0 auto;
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(10px);
+      border-radius: 20px;
+      padding: 2.5rem;
+      box-shadow: 0 15px 50px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    
+    .header h1 {
+      font-size: 2.2rem;
+      margin-bottom: 0.5rem;
+    }
+    
+    .header p {
+      opacity: 0.9;
+      font-size: 1rem;
+    }
+    
+    .form-section {
+      margin-bottom: 2.5rem;
+    }
+    
+    .form-group {
+      margin-bottom: 1.5rem;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+      font-size: 1rem;
+    }
+    
+    input[type="text"],
+    input[type="file"] {
+      width: 100%;
+      padding: 0.9rem;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-size: 1rem;
+      transition: all 0.3s ease;
+    }
+    
+    input[type="text"]::placeholder {
+      color: rgba(255, 255, 255, 0.7);
+    }
+    
+    input[type="text"]:focus,
+    input[type="file"]:focus {
+      outline: none;
+      border-color: #667eea;
+      background: rgba(255, 255, 255, 0.15);
+    }
+    
+    input[type="file"] {
+      padding: 0.6rem;
+      cursor: pointer;
+    }
+    
+    #checkMsg {
+      margin-top: 0.8rem;
+      padding: 0.8rem;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      min-height: 1.5rem;
+      display: none;
+    }
+    
+    #checkMsg.success {
+      background: rgba(34, 197, 94, 0.2);
+      border-left: 4px solid #22c55e;
+      color: #86efac;
+      display: block;
+    }
+    
+    #checkMsg.error {
+      background: rgba(239, 68, 68, 0.2);
+      border-left: 4px solid #ef4444;
+      color: #fca5a5;
+      display: block;
+    }
+    
+    #checkMsg.loading {
+      background: rgba(59, 130, 246, 0.2);
+      border-left: 4px solid #3b82f6;
+      color: #93c5fd;
+      display: block;
+    }
+    
+    button {
+      width: 100%;
+      padding: 1rem;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: white;
+      font-size: 1.05rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    
+    button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+    
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .list-section {
+      margin-top: 2.5rem;
+      padding-top: 2rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    
+    .list-section h3 {
+      margin-bottom: 1rem;
+      font-size: 1.3rem;
+    }
+    
+    .people-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 1rem;
+    }
+    
+    .person-card {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 10px;
+      padding: 1rem;
+      text-align: center;
+      font-size: 0.95rem;
+    }
+    
+    .empty-state {
+      text-align: center;
+      opacity: 0.8;
+      font-style: italic;
+    }
+    
+    .messages {
+      margin-bottom: 1.5rem;
+    }
+    
+    .message-item {
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 0.8rem;
+      display: flex;
+      align-items: center;
+      gap: 0.8rem;
+    }
+    
+    .message-success {
+      background: rgba(34, 197, 94, 0.2);
+      border-left: 4px solid #22c55e;
+      color: #86efac;
+    }
+    
+    .message-error {
+      background: rgba(239, 68, 68, 0.2);
+      border-left: 4px solid #ef4444;
+      color: #fca5a5;
+    }
+    
+    .back-link {
+      display: inline-block;
+      margin-top: 1rem;
+      padding: 0.6rem 1.2rem;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      color: white;
+      text-decoration: none;
+      transition: all 0.3s ease;
+    }
+    
+    .back-link:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>➕ Register New Face</h1>
+      <p>Add your face to the system for future verification</p>
+    </div>
+    
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="messages">
+          {% for message in messages %}
+            {% if 'Success' in message %}
+              <div class="message-item message-success">✓ {{ message }}</div>
+            {% else %}
+              <div class="message-item message-error">✗ {{ message }}</div>
+            {% endif %}
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    
+    <form id="uploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('upload') }}">
+      <div class="form-section">
+        <div class="form-group">
+          <label for="nameInput">Your Name</label>
+          <input type="text" id="nameInput" name="name" placeholder="Enter your full name" required>
+        </div>
+        
+        <div class="form-group">
+          <label for="imageInput">Upload Photo</label>
+          <input type="file" id="imageInput" name="file" accept="image/*" required>
+          <div id="checkMsg"></div>
+        </div>
+        
+        <button id="uploadBtn" type="submit" disabled>✓ Register & Encode</button>
+      </div>
+    </form>
+    
+    <div class="list-section">
+      <h3>📋 Registered Faces</h3>
+      {% if names %}
+        <div class="people-list">
+          {% for name in names %}
+            <div class="person-card">👤 {{ name }}</div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="empty-state">No registered faces yet. Be the first!</p>
+      {% endif %}
+    </div>
+    
+    <a href="{{ url_for('index') }}" class="back-link">← Back to Home</a>
   </div>
 
   <script>
@@ -51,23 +276,28 @@
       const fd = new FormData();
       fd.append('image', file);
       try {
-const res = await fetch("{{ url_for('check_duplicate') }}", { method: 'POST', body: fd });
+        const res = await fetch(API_ENDPOINTS.CHECK_DUPLICATE_FORM, { method: 'POST', body: fd });
         const data = await res.json();
         if (data.status === 'no_face') {
-          checkMsg.textContent = 'No face detected in the image.';
+          checkMsg.textContent = '✗ No face detected in the image';
+          checkMsg.className = 'error';
           uploadBtn.disabled = true;
         } else if (data.status === 'multiple_faces') {
-          checkMsg.textContent = 'Multiple faces detected in the image.';
+          checkMsg.textContent = '✗ Multiple faces detected. Upload one face per image';
+          checkMsg.className = 'error';
           uploadBtn.disabled = true;
         } else if (data.duplicate) {
-          checkMsg.textContent = `Duplicate detected: matched ${data.matches.join(', ')} (distance=${data.best_distance.toFixed(3)})`;
+          checkMsg.textContent = `✗ Duplicate detected: matches ${data.matches.join(', ')}`;
+          checkMsg.className = 'error';
           uploadBtn.disabled = true;
         } else {
-          checkMsg.textContent = 'Unique image — ready to upload.';
+          checkMsg.textContent = '✓ Unique image - ready to upload!';
+          checkMsg.className = 'success';
           uploadBtn.disabled = !nameInput.value.trim();
         }
       } catch (err) {
-        checkMsg.textContent = 'Error checking image.';
+        checkMsg.textContent = '✗ Error checking image';
+        checkMsg.className = 'error';
         uploadBtn.disabled = true;
       }
     }
@@ -75,15 +305,17 @@ const res = await fetch("{{ url_for('check_duplicate') }}", { method: 'POST', bo
     imageInput.addEventListener('change', (e) => {
       const f = e.target.files[0];
       if (!f) return;
-      checkMsg.textContent = 'Checking image...';
+      checkMsg.textContent = '⏳ Checking image...';
+      checkMsg.className = 'loading';
       uploadBtn.disabled = true;
       checkDuplicate(f);
     });
 
     nameInput.addEventListener('input', () => {
-      if (checkMsg.textContent.includes('Unique image')) {
+      if (checkMsg.className === 'success') {
         uploadBtn.disabled = !nameInput.value.trim();
       }
     });
   </script>
-</div>
+</body>
+</html>
