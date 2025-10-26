@@ -179,7 +179,19 @@
       <div class="name-text"></div>
     </div>
     
+    <div id="registrationForm" style="display:none; background: rgba(0, 0, 0, 0.4); padding: 2rem; border-radius: 10px; margin-bottom: 1.5rem;">
+      <h3 style="text-align:center; margin-bottom: 1rem;">📸 Register New Person</h3>
+      <input type="text" id="nameInput" placeholder="Enter your name" style="width: 100%; padding: 0.8rem; border-radius: 8px; border: none; margin-bottom: 1rem; font-size: 1rem;">
+      <div style="display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
+        <button class="btn btn-stop" id="capturePhotoBtn" onclick="capturePhotoForRegistration()" style="background: linear-gradient(90deg, #60a5fa, #3b82f6);">📸 Capture Photo</button>
+        <button class="btn btn-stop" id="registerBtn" onclick="submitRegistration()" style="background: linear-gradient(90deg, #4ade80, #10b981); display:none;">✓ Register</button>
+        <button class="btn btn-stop" onclick="cancelRegistration()">Cancel</button>
+      </div>
+      <div id="regMsg" style="margin-top: 1rem; text-align: center; font-size: 0.95rem;"></div>
+    </div>
+    
     <div class="controls">
+      <button class="btn btn-stop" id="tryAgainBtn" onclick="resetVerification()" style="background: linear-gradient(90deg, #fbbf24, #f59e0b); display: none;">🔄 Try Again</button>
       <button class="btn btn-stop" onclick="stopVerification()">Stop Verification</button>
       <a href="{{ url_for('index') }}" class="btn btn-home">Back to Home</a>
     </div>
@@ -191,14 +203,58 @@
 
   <script>
     const resultBox = document.getElementById('resultBox');
+    const registrationForm = document.getElementById('registrationForm');
+    const nameInput = document.getElementById('nameInput');
+    const regMsg = document.getElementById('regMsg');
     let lastStatus = null;
+
+    async function setRegistrationState(state) {
+      try {
+        await fetch("{{ url_for('registration_state') }}", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: state })
+        });
+      } catch (error) {
+        console.error('Error setting registration state:', error);
+      }
+    }
+
+    async function resetVerification() {
+      try {
+        await setRegistrationState(false);
+        await fetch("{{ url_for('reset_verification') }}", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        lastStatus = null;
+        registrationForm.style.display = 'none';
+        nameInput.value = '';
+        regMsg.textContent = '';
+        document.getElementById('capturePhotoBtn').style.display = 'block';
+        document.getElementById('capturePhotoBtn').disabled = false;
+        document.getElementById('registerBtn').style.display = 'none';
+        document.getElementById('registerBtn').disabled = false;
+        const statusText = resultBox.querySelector('.status-text');
+        const nameText = resultBox.querySelector('.name-text');
+        statusText.className = 'status-text status-none';
+        statusText.innerHTML = '<span class="loading-spinner"></span>Waiting for face...';
+        nameText.textContent = '';
+      } catch (error) {
+        console.error('Error resetting verification:', error);
+      }
+    }
 
     async function updateVerificationStatus() {
       try {
         const response = await fetch("{{ url_for('verification_status') }}");
+        if (!response.ok) {
+          console.error('Server error:', response.status);
+          return;
+        }
+        
         const data = await response.json();
 
-        // Only update if status changed
         if (data.status === lastStatus && data.status !== "waiting") {
           return;
         }
@@ -207,50 +263,186 @@
         const statusText = resultBox.querySelector('.status-text');
         const nameText = resultBox.querySelector('.name-text');
 
-        // Clear previous classes
         statusText.className = 'status-text';
 
-        if (data.status === 'verified') {
+        if (data.status === 'success') {
+          statusText.className = 'status-text status-verified';
+          statusText.innerHTML = '✅ REGISTERED';
+          nameText.textContent = data.message;
+          statusText.style.textShadow = '0 0 20px rgba(74, 222, 128, 0.5)';
+          registrationForm.style.display = 'none';
+          document.getElementById('tryAgainBtn').style.display = 'block';
+          nameInput.value = '';
+          regMsg.textContent = '✓ Registration complete!';
+          regMsg.style.color = '#86efac';
+          document.getElementById('registerBtn').disabled = false;
+          document.getElementById('registerBtn').style.display = 'none';
+          document.getElementById('capturePhotoBtn').style.display = 'block';
+        } else if (data.status === 'verified') {
           statusText.className = 'status-text status-verified';
           statusText.innerHTML = '✅ VERIFIED';
           nameText.textContent = `Welcome, ${data.name}!`;
           statusText.style.textShadow = '0 0 20px rgba(74, 222, 128, 0.5)';
+          registrationForm.style.display = 'none';
+          document.getElementById('tryAgainBtn').style.display = 'block';
         } else if (data.status === 'rejected') {
           statusText.className = 'status-text status-rejected';
           statusText.innerHTML = '❌ REJECTED';
           nameText.textContent = 'Multiple matching faces detected';
           statusText.style.textShadow = '0 0 20px rgba(248, 113, 113, 0.5)';
+          registrationForm.style.display = 'none';
+          document.getElementById('tryAgainBtn').style.display = 'block';
         } else if (data.status === 'unknown') {
           statusText.className = 'status-text status-unknown';
           statusText.innerHTML = '❌ UNKNOWN FACE';
-          nameText.textContent = 'Face not recognized in the database';
+          nameText.textContent = 'New person detected - Please register';
           statusText.style.textShadow = '0 0 20px rgba(248, 113, 113, 0.5)';
+          registrationForm.style.display = 'block';
+          document.getElementById('tryAgainBtn').style.display = 'none';
+          setRegistrationState(true);
+          nameInput.focus();
+        } else if (data.status === 'error') {
+          statusText.className = 'status-text status-rejected';
+          statusText.innerHTML = '❌ ERROR';
+          nameText.textContent = data.message;
+          statusText.style.textShadow = '0 0 20px rgba(248, 113, 113, 0.5)';
+          regMsg.textContent = `Error: ${data.message}`;
+          regMsg.style.color = '#fca5a5';
+          document.getElementById('registerBtn').disabled = false;
+          document.getElementById('registerBtn').style.display = 'none';
+          document.getElementById('capturePhotoBtn').style.display = 'block';
         } else if (data.status === 'waiting') {
           statusText.className = 'status-text status-waiting';
           statusText.innerHTML = `<span class="loading-spinner"></span>${data.message}`;
           nameText.textContent = '';
+          registrationForm.style.display = 'none';
         } else {
           statusText.className = 'status-text status-none';
-          statusText.innerHTML = '<span class="loading-spinner"></span>' + data.message;
+          statusText.innerHTML = '<span class="loading-spinner"></span>' + (data.message || 'Ready...');
           nameText.textContent = '';
+          registrationForm.style.display = 'none';
         }
       } catch (error) {
         console.error('Error updating status:', error);
       }
     }
 
-    async function stopVerification() {
+    async function capturePhotoForRegistration() {
+      const name = nameInput.value.trim();
+      if (!name) {
+        regMsg.textContent = 'Please enter your name first';
+        regMsg.style.color = '#fca5a5';
+        return;
+      }
+
+      regMsg.textContent = '📸 Capturing photo...';
+      regMsg.style.color = '#93c5fd';
+      document.getElementById('capturePhotoBtn').disabled = true;
+
       try {
-        await fetch("{{ url_for('stop_verification') }}", { method: 'POST' });
-        window.location.href = "{{ url_for('index') }}";
+        const response = await fetch("{{ url_for('capture_for_registration') }}", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name })
+        });
+
+        const data = await response.json();
+        console.log('Capture response:', data);
+
+        if (response.ok) {
+          regMsg.textContent = '✓ Photo captured! Click Register to encode.';
+          regMsg.style.color = '#86efac';
+          document.getElementById('registerBtn').style.display = 'block';
+          document.getElementById('capturePhotoBtn').style.display = 'none';
+        } else {
+          regMsg.textContent = data.message || 'Failed to capture photo';
+          regMsg.style.color = '#fca5a5';
+          document.getElementById('capturePhotoBtn').disabled = false;
+        }
       } catch (error) {
-        console.error('Error stopping verification:', error);
+        console.error('Error capturing photo:', error);
+        regMsg.textContent = `Error: ${error.message}`;
+        regMsg.style.color = '#fca5a5';
+        document.getElementById('capturePhotoBtn').disabled = false;
       }
     }
 
-    // Update status every 500ms
+    async function submitRegistration() {
+      const name = nameInput.value.trim();
+      if (!name) {
+        regMsg.textContent = 'Please enter a name';
+        regMsg.style.color = '#fca5a5';
+        return;
+      }
+
+      regMsg.textContent = '⏳ Encoding and registering...';
+      regMsg.style.color = '#93c5fd';
+      document.getElementById('registerBtn').disabled = true;
+
+      try {
+        const response = await fetch("{{ url_for('auto_register') }}", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name })
+        });
+
+        const data = await response.json();
+        console.log('Registration response:', data);
+
+        if (data.status === 'processing') {
+          regMsg.textContent = '⏳ Processing face encoding in background...';
+          regMsg.style.color = '#93c5fd';
+          document.getElementById('registerBtn').disabled = true;
+          registrationForm.style.display = 'block';
+        } else if (data.status === 'success') {
+          regMsg.textContent = data.message;
+          regMsg.style.color = '#86efac';
+          nameInput.value = '';
+          registrationForm.style.display = 'none';
+          document.getElementById('capturePhotoBtn').style.display = 'block';
+          document.getElementById('registerBtn').style.display = 'none';
+          
+          const statusText = resultBox.querySelector('.status-text');
+          const nameText = resultBox.querySelector('.name-text');
+          statusText.className = 'status-text status-verified';
+          statusText.innerHTML = '✅ REGISTERED';
+          nameText.textContent = `${name} successfully registered!`;
+          statusText.style.textShadow = '0 0 20px rgba(74, 222, 128, 0.5)';
+        } else {
+          regMsg.textContent = data.message || 'Registration failed';
+          regMsg.style.color = '#fca5a5';
+          document.getElementById('registerBtn').disabled = false;
+        }
+      } catch (error) {
+        console.error('Error registering:', error);
+        regMsg.textContent = `Error: ${error.message}`;
+        regMsg.style.color = '#fca5a5';
+        document.getElementById('registerBtn').disabled = false;
+      }
+    }
+
+    function cancelRegistration() {
+      nameInput.value = '';
+      registrationForm.style.display = 'none';
+      regMsg.textContent = '';
+      document.getElementById('capturePhotoBtn').style.display = 'block';
+      document.getElementById('capturePhotoBtn').disabled = false;
+      document.getElementById('registerBtn').style.display = 'none';
+      document.getElementById('registerBtn').disabled = false;
+    }
+
+    function stopVerification() {
+      fetch("{{ url_for('stop_verification') }}", {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(() => {
+        window.location.href = "{{ url_for('index') }}";
+      }).catch(error => {
+        console.error('Error stopping verification:', error);
+      });
+    }
+
     setInterval(updateVerificationStatus, 500);
-    updateVerificationStatus();
   </script>
 </body>
 </html>

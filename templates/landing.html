@@ -17,17 +17,12 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>Person Verification</h1>
-    <p>Choose an action below. <strong>Login</strong> opens the camera and runs the verification flow. <strong>Register</strong> opens the page to add a new person.</p>
+    <h1>Person Verification System</h1>
+    <p>Click the button below to open the camera. The system will verify your face within 5 seconds. If you're not registered, you'll be asked to enter your name for automatic registration.</p>
 
     <!-- Start Camera Form -->
     <form id="startForm" method="get" action="{{ url_for('camera') }}">
-      <button class="btn login" type="submit">Login (Open Camera)</button>
-    </form>
-
-    <!-- Register Button as a Form -->
-    <form method="get" action="{{ url_for('register') }}">
-      <button class="btn register" type="submit">Register (Add Person)</button>
+      <button class="btn login" type="submit">🎥 Start Verification</button>
     </form>
 
   </div>
