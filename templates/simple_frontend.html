@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Face Verification — Simple Frontend</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Roboto, 'Segoe UI', Arial; max-width:800px; margin:30px auto; padding:0 16px; color:#222 }
+    h1 { font-size:1.4rem; margin-bottom:8px }
+    .card { border:1px solid #e6e6e6; padding:16px; border-radius:8px; margin-bottom:16px; background:#fff }
+    label { display:block; margin:8px 0 4px }
+    input[type=file] { display:block }
+    button { margin-top:8px; padding:8px 12px; border-radius:6px; border:1px solid #888; background:#f4f4f4; cursor:pointer }
+    button:disabled { opacity:0.6; cursor:not-allowed }
+    #result { margin-top:12px; padding:10px; border-radius:6px }
+    .ok { background:#e6ffed; border:1px solid #b5f0c4 }
+    .warn { background:#fff7e6; border:1px solid #ffd88a }
+    .err { background:#ffe6e6; border:1px solid #ffb5b5 }
+    img.preview { max-width:240px; max-height:180px; display:block; margin-top:8px; border-radius:6px }
+    .row { display:flex; gap:12px; align-items:center }
+    small.gray { color:#666 }
+  </style>
+</head>
+<body>
+  <h1>Face Verification (simple)</h1>
+  <p class="gray"><small>Talks to <code>/verify</code> and <code>/register</code> on <code>http://localhost:5000</code>. Start your server first.</small></p>
+
+  <div class="card">
+    <h2>Verify</h2>
+    <form id="verifyForm">
+      <label for="verifyImage">Choose image to verify</label>
+      <input id="verifyImage" name="image" type="file" accept="image/*" required />
+      <img id="verifyPreview" class="preview" alt="" style="display:none" />
+      <div class="row">
+        <button id="verifyBtn" type="submit">Verify</button>
+        <small class="gray">Threshold used on server: 0.45</small>
+      </div>
+    </form>
+    <div id="verifyResult" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Register</h2>
+    <form id="registerForm">
+      <label for="regName">Name</label>
+      <input id="regName" name="name" required placeholder="Full name" />
+
+      <label for="regImage">Choose image to register</label>
+      <input id="regImage" name="image" type="file" accept="image/*" required />
+      <img id="regPreview" class="preview" alt="" style="display:none" />
+
+      <div class="row">
+        <button id="registerBtn" type="submit">Register</button>
+        <small class="gray">Tip: use a clear, front-facing photo.</small>
+      </div>
+    </form>
+    <div id="registerResult" style="margin-top:8px"></div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:5000';
+
+    function showResult(el, obj) {
+      el.innerHTML = '';
+      el.className = '';
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.textContent = JSON.stringify(obj, null, 2);
+      el.appendChild(pre);
+      if (obj.status === 'accept' || obj.status === 'registered') el.classList.add('ok');
+      else if (obj.status === 'register' || obj.status === 'reject') el.classList.add('warn');
+      else el.classList.add('err');
+    }
+
+    async function postForm(url, formData) {
+      const res = await fetch(url, { method: 'POST', body: formData });
+      if (!res.ok) throw new Error('Network response was not ok: ' + res.status);
+      return res.json();
+    }
+
+    // Verify
+    const verifyForm = document.getElementById('verifyForm');
+    const verifyImage = document.getElementById('verifyImage');
+    const verifyPreview = document.getElementById('verifyPreview');
+    const verifyBtn = document.getElementById('verifyBtn');
+    const verifyResult = document.getElementById('verifyResult');
+
+    verifyImage.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) { verifyPreview.style.display = 'none'; return }
+      verifyPreview.src = URL.createObjectURL(file);
+      verifyPreview.style.display = 'block';
+    });
+
+    verifyForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      verifyBtn.disabled = true;
+      verifyResult.textContent = 'Working...';
+      try {
+        const f = verifyImage.files[0];
+        if (!f) throw new Error('No file selected');
+        const fd = new FormData();
+        fd.append('image', f, f.name);
+        const json = await postForm(API_BASE + '/verify', fd);
+        showResult(verifyResult, json);
+
+        // If server asks to register, prompt user for a name and auto-register.
+        if (json && json.status === 'register') {
+          const name = window.prompt('No match found. Enter a name to register this face:');
+          if (name && name.trim()) {
+            verifyResult.textContent = 'Registering...';
+            const fd2 = new FormData();
+            fd2.append('image', f, f.name);
+            fd2.append('name', name.trim());
+            try {
+              const regJson = await postForm(API_BASE + '/register', fd2);
+              showResult(verifyResult, regJson);
+              // friendly popup
+              alert((regJson && regJson.message) ? regJson.message : 'Registered successfully');
+            } catch (regErr) {
+              showResult(verifyResult, { error: String(regErr) });
+            }
+          } else {
+            // user cancelled or provided empty name
+            verifyResult.textContent = 'Registration cancelled by user.';
+          }
+        }
+      } catch (err) {
+        showResult(verifyResult, { error: String(err) });
+      } finally { verifyBtn.disabled = false }
+    });
+
+    // Register
+    const registerForm = document.getElementById('registerForm');
+    const regImage = document.getElementById('regImage');
+    const regPreview = document.getElementById('regPreview');
+    const registerBtn = document.getElementById('registerBtn');
+    const registerResult = document.getElementById('registerResult');
+
+    regImage.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) { regPreview.style.display = 'none'; return }
+      regPreview.src = URL.createObjectURL(file);
+      regPreview.style.display = 'block';
+    });
+
+    registerForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      registerBtn.disabled = true;
+      registerResult.textContent = 'Working...';
+      try {
+        const f = regImage.files[0];
+        const name = document.getElementById('regName').value.trim();
+        if (!name) throw new Error('Name is required');
+        if (!f) throw new Error('No file selected');
+        const fd = new FormData();
+        fd.append('image', f, f.name);
+        fd.append('name', name);
+        const json = await postForm(API_BASE + '/register', fd);
+        showResult(registerResult, json);
+      } catch (err) {
+        showResult(registerResult, { error: String(err) });
+      } finally { registerBtn.disabled = false }
+    });
+  </script>
+</body>
+</html>
