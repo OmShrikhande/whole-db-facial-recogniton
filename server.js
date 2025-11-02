@@ -39,7 +39,30 @@ async function connectDB() {
   const client = new MongoClient(mongoURL);
   await client.connect();
   db = client.db(dbName);
-  console.log('✅ Connected to MongoDB');
+  
+  // Create compound index on usercode and status
+  // This allows duplicate usercodes only if they have different statuses
+  await db.collection('image_verifications').createIndex(
+    { usercode: 1, status: 1 },
+    { 
+      unique: true,
+      partialFilterExpression: { status: "registered" } // Only enforce uniqueness for registered entries
+    }
+  );
+  
+  // Create indexes for faster face similarity searches
+  await db.collection('image_verifications').createIndex(
+    { imagetext: 1 },
+    { name: "face_embedding_index" }
+  );
+  
+  // Create index for querying rejected attempts
+  await db.collection('image_verifications').createIndex(
+    { status: 1, createdAt: -1 },
+    { name: "status_time_index" }
+  );
+
+  console.log('✅ Connected to MongoDB and created indexes');
   await loadEmbeddingsToCache();
 }
 
@@ -166,6 +189,22 @@ function euclideanDistance(v1, v2) {
   return Math.sqrt(v1.reduce((sum, val, i) => sum + (val - v2[i]) ** 2, 0));
 }
 
+// === Check for duplicate faces in database ===
+async function checkDuplicateFace(embedding, threshold = 0.45) {
+  const existingFaces = await db.collection('image_verifications').find({}).toArray();
+  for (const face of existingFaces) {
+    const distance = euclideanDistance(embedding, face.imagetext);
+    if (distance < threshold) {
+      return {
+        isDuplicate: true,
+        existingUsercode: face.usercode,
+        distance: distance
+      };
+    }
+  }
+  return { isDuplicate: false };
+}
+
 // === POST /verify ===
 app.post('/verify', upload.single('image'), async (req, res) => {
   // Flow: analyze image quality first, then verify if quality is good
@@ -193,17 +232,84 @@ app.post('/verify', upload.single('image'), async (req, res) => {
     } else if (matches.length > 1) {
       return res.json({ status: 'reject', reason: 'multiple-matches', message: 'Rejected — multiple matches found' });
     } else {
-      // No match found. If the client supplied a name in the same request,
-      // auto-register the embedding. Otherwise instruct the client to provide
-      // a name to register.
-      const name = req.body && req.body.name;
-      if (name) {
-        const insertRes = await db.collection('faces').insertOne({ name, embedding: Array.from(embedding) });
-        // append to in-memory cache without reloading everything
-        embeddingsCache.push({ id: insertRes.insertedId, name, descriptor: new Float32Array(embedding) });
-        return res.json({ status: 'registered', name, message: 'No previous match — registered successfully' });
+      // No match found - validate and store the new face
+      const { usercode } = req.body;
+      
+      // Validate usercode
+      if (!usercode || typeof usercode !== 'string' || usercode.trim().length === 0) {
+        return res.json({
+          status: 'error',
+          message: 'A valid usercode is required for verification'
+        });
       }
-      return res.json({ status: 'register', message: 'No match found. Provide a `name` to register this face.' });
+
+      // Check if usercode already exists
+      const existingUser = await db.collection('image_verifications').findOne({ usercode: usercode });
+      if (existingUser) {
+        return res.json({
+          status: 'error',
+          message: 'This usercode is already registered. Please use a different code.'
+        });
+      }
+
+      // Check if this face exists for another usercode
+      const duplicateCheck = await checkDuplicateFace(Array.from(embedding));
+      if (duplicateCheck.isDuplicate) {
+        // Store the rejected attempt in the database
+        try {
+          await db.collection('image_verifications').insertOne({
+            usercode: usercode.trim(),
+            imagetext: Array.from(embedding),
+            status: 'rejected',
+            rejectionReason: 'duplicate-face',
+            matchedUsercode: duplicateCheck.existingUsercode,
+            similarity: Math.round((1 - duplicateCheck.distance) * 100),
+            createdAt: new Date()
+          });
+          console.log('✅ Stored rejected attempt for duplicate face');
+        } catch (err) {
+          console.error('Failed to store rejected attempt:', err);
+        }
+
+        return res.json({
+          status: 'duplicate-face',
+          message: 'This face is already registered with usercode:',
+          existingUsercode: duplicateCheck.existingUsercode,
+          similarity: Math.round((1 - duplicateCheck.distance) * 100) + '%'
+        });
+      }
+      
+      // All checks passed - store in image_verifications collection
+      try {
+        const storeResult = await db.collection('image_verifications').insertOne({
+          usercode: usercode.trim(),
+          imagetext: Array.from(embedding),
+          status: 'registered',
+          createdAt: new Date()
+        });
+
+        if (storeResult && storeResult.insertedId) {
+          console.log('✅ Stored new face embedding:', storeResult.insertedId.toString());
+          return res.json({ 
+            status: 'registered',
+            message: 'Face registered successfully for verification',
+            notification: 'Your face has been registered for future verification'
+          });
+        }
+      } catch (dbError) {
+        if (dbError.code === 11000) { // MongoDB duplicate key error
+          return res.json({
+            status: 'error',
+            message: 'This usercode is already registered. Please use a different code.'
+          });
+        }
+        throw dbError; // Let the main error handler catch other DB errors
+      }
+      
+      return res.json({ 
+        status: 'error',
+        message: 'Failed to store face data'
+      });
     }
   } catch (err) {
     console.error('Error in /verify:', err);
