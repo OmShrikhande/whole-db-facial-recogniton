@@ -320,42 +320,6 @@ app.post('/verify', upload.single('image'), async (req, res) => {
   }
 });
 
-// === POST /register ===
-app.post('/register', upload.single('image'), async (req, res) => {
-  const { name } = req.body;
-  const file = req.file;
-  if (!file) return res.status(400).json({ status: 'error', message: 'No image uploaded' });
-
-  const imgPath = file.path;
-  try {
-    // First analyze image quality
-    const analysis = await analyzeFaceImage(imgPath);
-    if (analysis.status === 'reupload') {
-      return res.json(analysis); // Return quality issue with reason and message
-    }
-    
-    const embedding = analysis.descriptor;
-
-    const insertRes = await db.collection('faces').insertOne({ name, embedding: Array.from(embedding) });
-    // append to in-memory cache without reloading everything
-    embeddingsCache.push({ id: insertRes.insertedId, name, descriptor: new Float32Array(embedding) });
-
-    return res.json({ status: 'registered', name, message: 'Registered successfully' });
-  } catch (err) {
-    console.error('Error in /register:', err);
-    return res.status(500).json({ status: 'error', message: String(err) });
-  } finally {
-    try { await fs.promises.unlink(imgPath); } catch (e) { /* ignore */ }
-  }
-});
-
-// === GET /status ===
-app.get('/status', (req, res) => {
-  res.json({
-    status: 'running',
-    facesInMemory: embeddingsCache.length,
-  });
-});
 
 // === Start Server ===
 (async () => {
