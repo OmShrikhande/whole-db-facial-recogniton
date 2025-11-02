@@ -1,4 +1,5 @@
 // server.js
+require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const faceapi = require('face-api.js');
@@ -20,8 +21,8 @@ const upload = multer({ dest: 'uploads/' });
 const PORT = 5000;
 app.use(cors());
 // === MongoDB Setup ===
-const mongoURL = 'mongodb://127.0.0.1:27017';
-const dbName = 'faceDB';
+const mongoURL = process.env.mongouri;
+const dbName = process.env.dbName;
 let db;
 let embeddingsCache = []; // Keep embeddings in RAM for speed
 
