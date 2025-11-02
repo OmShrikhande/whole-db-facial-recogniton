@@ -17,7 +17,7 @@ faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
 // === Express Setup ===
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ dest: 'uploads/', limits: { fileSize: 5 * 1024 * 1024 } });
 const PORT = 5000;
 app.use(cors());
 // === MongoDB Setup ===
@@ -37,7 +37,11 @@ async function loadModels() {
 
 // === Connect MongoDB ===
 async function connectDB() {
-  const client = new MongoClient(mongoURL);
+  const client = new MongoClient(mongoURL, {
+    tls: true,
+    tlsAllowInvalidCertificates: false,
+    serverSelectionTimeoutMS: 5000
+  });
   await client.connect();
   db = client.db(dbName);
   
@@ -100,9 +104,9 @@ function varianceOfLaplacian(imgData) {
   const kernel = [-1, -1, -1, -1, 8, -1, -1, -1, -1]; // Laplacian kernel
   const values = [];
 
-  // Convert to grayscale and apply Laplacian
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
+  // Convert to grayscale and apply Laplacian (sample every 2nd pixel for speed)
+  for (let y = 1; y < height - 1; y += 2) {
+    for (let x = 1; x < width - 1; x += 2) {
       let sum = 0;
       for (let ky = -1; ky <= 1; ky++) {
         for (let kx = -1; kx <= 1; kx++) {
@@ -125,12 +129,23 @@ function varianceOfLaplacian(imgData) {
 
 // === Analyze Face Image ===
 async function analyzeFaceImage(imgPath) {
-  const img = await canvas.loadImage(imgPath);
-  
-  // Detect all faces with landmarks and descriptors
+  let img = await canvas.loadImage(imgPath);
+
+  // Resize image if too large to speed up processing
+  const maxDimension = 800;
+  if (img.width > maxDimension || img.height > maxDimension) {
+    const scale = Math.min(maxDimension / img.width, maxDimension / img.height);
+    const newWidth = Math.floor(img.width * scale);
+    const newHeight = Math.floor(img.height * scale);
+    const resizedCanvas = canvas.createCanvas(newWidth, newHeight);
+    const ctx = resizedCanvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, newWidth, newHeight);
+    img = resizedCanvas;
+  }
+
+  // Detect all faces with descriptors (landmarks not needed)
   const detections = await faceapi
     .detectAllFaces(img)
-    .withFaceLandmarks()
     .withFaceDescriptors();
 
   if (!detections || detections.length === 0) {
@@ -192,7 +207,7 @@ function euclideanDistance(v1, v2) {
 
 // === Check for duplicate faces in database ===
 async function checkDuplicateFace(embedding, threshold = 0.45) {
-  const existingFaces = await db.collection('image_verifications').find({}).toArray();
+  const existingFaces = await db.collection('image_verifications').find({ status: 'registered' }).toArray();
   for (const face of existingFaces) {
     const distance = euclideanDistance(embedding, face.imagetext);
     if (distance < threshold) {
