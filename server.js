@@ -3,11 +3,10 @@ require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
 const faceapi = require('face-api.js');
-const tf = require('@tensorflow/tfjs');
+const tf = require('@tensorflow/tfjs-node');
 const { MongoClient } = require('mongodb');
 const canvas = require('canvas');
 const path = require('path');
-const fs = require('fs');
 const cors = require('cors');
 
 
@@ -17,7 +16,7 @@ faceapi.env.monkeyPatch({ Canvas, Image, ImageData });
 
 // === Express Setup ===
 const app = express();
-const upload = multer({ dest: 'uploads/', limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const PORT = 5000;
 app.use(cors());
 // === MongoDB Setup ===
@@ -25,6 +24,7 @@ const mongoURL = process.env.mongouri;
 const dbName = process.env.dbName;
 let db;
 let embeddingsCache = []; // Keep embeddings in RAM for speed
+let registeredEmbeddingsCache = [];
 
 // === Load Models ===
 async function loadModels() {
@@ -73,13 +73,29 @@ async function connectDB() {
 
 // === Preload all face embeddings to RAM ===
 async function loadEmbeddingsToCache() {
-  const faces = await db.collection('faces').find().toArray();
-  embeddingsCache = faces.map(f => ({
-    id: f._id,
-    name: f.name,
-    descriptor: new Float32Array(f.embedding),
-  }));
-  console.log(`📦 Loaded ${embeddingsCache.length} embeddings to memory`);
+  const faces = await db.collection('faces').find().project({ name: 1, embedding: 1 }).toArray();
+  embeddingsCache = faces
+    .filter(f => Array.isArray(f.embedding))
+    .map(f => ({
+      id: f._id,
+      name: f.name,
+      descriptor: Float32Array.from(f.embedding),
+    }));
+
+  const registered = await db.collection('image_verifications')
+    .find({ status: 'registered' })
+    .project({ usercode: 1, imagetext: 1 })
+    .toArray();
+
+  registeredEmbeddingsCache = registered
+    .filter(r => Array.isArray(r.imagetext))
+    .map(r => ({
+      id: r._id,
+      usercode: r.usercode,
+      descriptor: Float32Array.from(r.imagetext),
+    }));
+
+  console.log(`📦 Loaded ${embeddingsCache.length} reference embeddings and ${registeredEmbeddingsCache.length} registered embeddings to memory`);
 }
 
 // === Image Analysis Helpers ===
@@ -128,8 +144,8 @@ function varianceOfLaplacian(imgData) {
 }
 
 // === Analyze Face Image ===
-async function analyzeFaceImage(imgPath) {
-  let img = await canvas.loadImage(imgPath);
+async function analyzeFaceImage(source) {
+  let img = await canvas.loadImage(source);
 
   // Resize image if too large to speed up processing
   const maxDimension = 800;
@@ -202,22 +218,35 @@ async function analyzeFaceImage(imgPath) {
 
 // === Compare Two Faces ===
 function euclideanDistance(v1, v2) {
-  return Math.sqrt(v1.reduce((sum, val, i) => sum + (val - v2[i]) ** 2, 0));
+  let sum = 0;
+  for (let i = 0; i < v1.length; i++) {
+    const diff = v1[i] - v2[i];
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
 }
 
 // === Check for duplicate faces in database ===
 async function checkDuplicateFace(embedding, threshold = 0.45) {
-  const existingFaces = await db.collection('image_verifications').find({ status: 'registered' }).toArray();
-  for (const face of existingFaces) {
-    const distance = euclideanDistance(embedding, face.imagetext);
-    if (distance < threshold) {
-      return {
-        isDuplicate: true,
-        existingUsercode: face.usercode,
-        distance: distance
+  let bestMatch = null;
+  for (const face of registeredEmbeddingsCache) {
+    const distance = euclideanDistance(embedding, face.descriptor);
+    if (distance < threshold && (!bestMatch || distance < bestMatch.distance)) {
+      bestMatch = {
+        usercode: face.usercode,
+        distance,
       };
     }
   }
+
+  if (bestMatch) {
+    return {
+      isDuplicate: true,
+      existingUsercode: bestMatch.usercode,
+      distance: bestMatch.distance,
+    };
+  }
+
   return { isDuplicate: false };
 }
 
@@ -225,12 +254,10 @@ async function checkDuplicateFace(embedding, threshold = 0.45) {
 app.post('/verify', upload.single('image'), async (req, res) => {
   // Flow: analyze image quality first, then verify if quality is good
   const file = req.file;
-  if (!file) return res.status(400).json({ status: 'error', message: 'No image uploaded' });
+  if (!file || !file.buffer) return res.status(400).json({ status: 'error', message: 'No image uploaded' });
 
-  const imgPath = file.path;
   try {
-    // First analyze image quality
-    const analysis = await analyzeFaceImage(imgPath);
+    const analysis = await analyzeFaceImage(file.buffer);
     if (analysis.status === 'reupload') {
       return res.json(analysis); // Return quality issue with reason and message
     }
@@ -269,7 +296,7 @@ app.post('/verify', upload.single('image'), async (req, res) => {
       }
 
       // Check if this face exists for another usercode
-      const duplicateCheck = await checkDuplicateFace(Array.from(embedding));
+      const duplicateCheck = await checkDuplicateFace(embedding);
       if (duplicateCheck.isDuplicate) {
         // Store the rejected attempt in the database
         try {
